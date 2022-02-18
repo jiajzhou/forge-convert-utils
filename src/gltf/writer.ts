@@ -93,7 +93,7 @@ export class Writer {
      */
     async write(imf: IMF.IScene, outputDir: string) {
         this.reset(outputDir);
-        const scene = this.createScene(imf);
+        const scene = await this.createScene(imf);
         const scenes = this.manifest.scenes as gltf.Scene[];
         scenes.push(scene);
 
@@ -116,9 +116,87 @@ export class Writer {
             delete this.manifest.images;
 
         const gltfPath = path.join(this.baseDir, 'output.gltf');
-        fse.writeFileSync(gltfPath, JSON.stringify(this.manifest, null, 4));
-        this.options.log(`Closing gltf output: done`);
-        this.options.log(`Stats: ${JSON.stringify(this.stats)}`);
+        
+        const outputStream = fse.createWriteStream(gltfPath, 'utf-8');
+
+        outputStream.write('{');
+
+        let index = 0;
+        let keys = Object.keys(this.manifest);
+        console.log(keys)
+        for (const k of keys) {
+            console.log('key ' + k);
+            if (index !== 0) {
+                outputStream.write(',')
+            }
+            
+            const obj = this.manifest[k];
+            if (Array.isArray(obj)) {            
+                outputStream.write(`"${k}": `);
+
+                outputStream.write('[\n');
+                let ii = 0;
+                for (const item of obj) {
+                    
+                    if (ii % 10000 === 0) {
+                        console.log(k + ' processed ' + ii);
+
+                        await this.setTimeoutPromise(0);
+                    }
+
+                    if (ii !== 0) {
+                        outputStream.write(',')
+                    }
+                    outputStream.write(JSON.stringify(item));
+                    outputStream.write('\n');
+                    ii ++;
+                };
+                outputStream.write(']');
+            } else if (obj !== undefined && obj !== null) {
+                outputStream.write(`"${k}": `);
+    
+                outputStream.write(JSON.stringify(obj, null, 2));
+            }
+            outputStream.write('\n');
+            index++;
+        }
+        outputStream.write('}');
+
+        await new Promise(resolve => {
+            outputStream.on('finish', () => {
+                resolve(null)
+            });
+        });
+
+        outputStream.close();
+
+
+        // const stringifyStream = bigJSON.createStringifyStream({
+        //     body: this.manifest
+        // });
+
+        // const pro = new Promise((resolve, reject) => {
+
+        //     stringifyStream.on('data', function(strChunk:string) {
+        //         // => BIG_POJO will be sent out in JSON chunks as the object is traversed
+        //         outputStream.write(strChunk + '\n');
+        //     });
+    
+        //     stringifyStream.once('error', (e: any) => {
+        //         console.log('Error at path', stringifyStream.stack.join('.'));
+        //         reject(e);
+        //     });
+    
+        //     stringifyStream.on('end', () => {
+        //         resolve(null);
+        //     })
+        // });
+                
+        // await pro;
+
+        // fse.writeFileSync(gltfPath, JSON.stringify(this.manifest, null, 4));
+        console.log(`Closing gltf output: done`);
+        console.log(`Stats: ${JSON.stringify(this.stats)}`);
         await this.postprocess(imf, gltfPath);
     }
 
@@ -162,7 +240,13 @@ export class Writer {
     protected async postprocess(imf: IMF.IScene, gltfPath: string) {
     }
 
-    protected createScene(imf: IMF.IScene): gltf.Scene {
+    protected async setTimeoutPromise(delay: number): Promise<any> {
+        return new Promise((resolve) => {
+          setTimeout(() => resolve(undefined), delay);
+        });
+      }
+
+    protected async createScene(imf: IMF.IScene): Promise<gltf.Scene> {
         fse.ensureDirSync(this.baseDir);
 
         let scene: gltf.Scene = {
@@ -253,6 +337,12 @@ export class Writer {
             if (!filter(fragment.dbid)) {
                 continue;
             }
+            
+            if (i % 10000 === 0) {
+                console.log('processed ' + i);
+                await this.setTimeoutPromise(0);
+            }
+            
             const material = imf.getMaterial(fragment.material);
             // Only output UVs if there are any textures or if the user specifically asked not to skip unused UVs
             const outputUvs = hasTextures(material) || !this.options.skipUnusedUvs;
@@ -357,16 +447,17 @@ export class Writer {
 
     protected addMesh(mesh: gltf.Mesh): number {
         const meshes = this.manifest.meshes as gltf.Mesh[];
-        const hash = this.computeMeshHash(mesh);
-        const match = this.options.deduplicate ? this.meshHashes.indexOf(hash) : -1;
-        if (match !== -1) {
-            this.options.log(`Skipping a duplicate mesh (${hash})`);
-            this.stats.meshesDeduplicated++;
-            return match;
+        if (this.options.deduplicate) {
+            const hash = this.computeMeshHash(mesh);
+            const match = this.meshHashes.indexOf(hash);
+            if (match !== -1) {
+                this.options.log(`Skipping a duplicate mesh (${hash})`);
+                this.stats.meshesDeduplicated++;
+                return match;
+            } 
+            this.meshHashes.push(hash);
+            return meshes.push(mesh) - 1;
         } else {
-            if (this.options.deduplicate) {
-                this.meshHashes.push(hash);
-            }
             return meshes.push(mesh) - 1;
         }
     }
@@ -553,23 +644,33 @@ export class Writer {
     }
 
     protected createBufferView(data: Buffer): gltf.BufferView {
-        const hash = this.computeBufferHash(data);
-        const cache = this.bufferViewCache.get(hash);
-        if (this.options.deduplicate && cache) {
-            this.options.log(`Skipping a duplicate buffer (${hash})`);
-            return cache;
+        let hash = '';
+        if (this.options.deduplicate) {
+            hash = this.computeBufferHash(data);
+            const cache = this.bufferViewCache.get(hash);
+            if (cache) {
+                this.options.log(`Skipping a duplicate buffer (${hash})`);
+                return cache;
+            }
         }
 
         const manifestBuffers = this.manifest.buffers as gltf.Buffer[];
 
         // Prepare new writable stream if needed
         if (this.bufferStream === null || this.bufferSize > this.options.maxBufferSize) {
+            console.log('createBufferView')
             if (this.bufferStream) {
                 const stream = this.bufferStream as fse.WriteStream;
                 this.pendingTasks.push(new Promise((resolve, reject) => {
+                    
+                    console.log('a buffer finished');
                     stream.on('finish', resolve);
                 }));
-                this.bufferStream.close();
+                console.log('close a buffer');
+                this.bufferStream.close((err) => {
+                    
+                    console.log('a buffer closed');
+                });
                 this.bufferStream = null;
                 this.bufferSize = 0;
             }
@@ -606,18 +707,20 @@ export class Writer {
 
     protected addAccessor(accessor: gltf.Accessor): number {
         const accessors = this.manifest.accessors as gltf.Accessor[];
-        const hash = this.computeAccessorHash(accessor);
-        const match = this.options.deduplicate ? this.accessorHashes.indexOf(hash) : -1;
-        if (match !== -1) {
-            this.options.log(`Skipping a duplicate accessor (${hash})`);
-            this.stats.accessorsDeduplicated++;
-            return match;
-        } else {
-            if (this.options.deduplicate) {
+        if (this.options.deduplicate) {
+            const hash = this.computeAccessorHash(accessor);
+            const match = this.accessorHashes.indexOf(hash);
+            if (match !== -1) {
+                this.options.log(`Skipping a duplicate accessor (${hash})`);
+                this.stats.accessorsDeduplicated++;
+                return match;
+            } else {
                 this.accessorHashes.push(hash);
+                return accessors.push(accessor) - 1;
             }
-            return accessors.push(accessor) - 1;
         }
+        
+        return accessors.push(accessor) - 1;
     }
 
     protected createAccessor(bufferViewID: number, componentType: number, count: number, type: string, min?: number[], max?: number[]): gltf.Accessor {

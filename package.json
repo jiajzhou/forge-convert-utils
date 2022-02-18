@@ -37,9 +37,18 @@
     "typescript": "^4.5.5"
   },
   "dependencies": {
+    "@gltf-transform/core": "^2.0.4",
+    "@gltf-transform/extensions": "^2.0.4",
+    "@gltf-transform/functions": "^2.0.4",
     "adm-zip": "^0.5.9",
+    "big-json": "^3.1.0",
     "commander": "^3.0.2",
     "forge-server-utils": "^8.3.5",
-    "fs-extra": "^10.0.0"
+    "fs-extra": "^10.0.0",
+    "gltf-pipeline": "^3.0.4",
+    "json-stream-stringify": "^2.0.4",
+    "request": "^2.88.2",
+    "three": "^0.137.5",
+    "worker-farm": "^1.7.0"
   }
 }
